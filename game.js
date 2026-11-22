@@ -121,10 +121,15 @@ class Asteroid {
 // ── Ship ──────────────────────────────────────────────────────────────────────
 const TRIPLE_DURATION = 10;    // segundos de disparo triple
 const TRIPLE_SPREAD   = 0.2;   // separación angular del abanico (rad)
+const SHIELD_DURATION = 5;     // segundos de escudo temporal
+const SHIELD_RADIUS   = 22;    // radio del círculo de energía
+const SHIELD_GRACE    = 1;     // invencibilidad tras absorber un golpe (s)
 
 class Ship {
   constructor() {
-    this.tripleShot = 0;   // tiempo restante de disparo triple (se conserva entre niveles)
+    // Efectos de power-up (se conservan entre niveles, se pierden al morir)
+    this.tripleShot = 0;   // tiempo restante de disparo triple
+    this.shield     = 0;   // tiempo restante de escudo
     this.reset();
   }
 
@@ -146,6 +151,7 @@ class Ship {
     if (this.invincible    > 0) this.invincible    -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.tripleShot    > 0) this.tripleShot    = Math.max(0, this.tripleShot - dt);
+    if (this.shield        > 0) this.shield        = Math.max(0, this.shield - dt);
 
     const ROT   = 3.5;   // rad/s
     const THRUST = 260;  // px/s²
@@ -181,6 +187,21 @@ class Ship {
 
   draw() {
     if (this.dead) return;
+
+    // Escudo: círculo de energía (parpadea el último segundo)
+    if (this.shield > 0 && !(this.shield < 1 && Math.floor(this.shield * 10) % 2 === 0)) {
+      const pulse = 1 + Math.sin(performance.now() / 120) * 0.05;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,220,0,0.9)';
+      ctx.lineWidth   = 2;
+      ctx.shadowColor = '#fd0';
+      ctx.shadowBlur  = 10;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, SHIELD_RADIUS * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
@@ -246,14 +267,21 @@ class Particle {
   }
 }
 
-// ── Power-up: Disparo Triple ──────────────────────────────────────────────────
-const POWERUP_DROP_CHANCE = 0.1;  // probabilidad por asteroide destruido
+// ── Power-ups ─────────────────────────────────────────────────────────────────
+const POWERUP_DROP_CHANCE = 0.1;// probabilidad por asteroide destruido
 const POWERUP_TTL         = 8;      // segundos antes de desaparecer si no se recoge
 
+// Cada tipo aparece como máximo una vez por partida
+const POWERUP_TYPES = {
+  triple: { rgb: '0,255,255', title: '¡DISPARO TRIPLE!', duration: TRIPLE_DURATION },
+  shield: { rgb: '255,220,0', title: '¡ESCUDO!',         duration: SHIELD_DURATION },
+};
+
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type) {
     this.x = x;
     this.y = y;
+    this.type = type;
     const angle = rand(0, Math.PI * 2);
     const speed = rand(20, 40);
     this.vx = Math.cos(angle) * speed;
@@ -280,18 +308,29 @@ class PowerUp {
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(pulse, pulse);
-    ctx.strokeStyle = '#0ff';
+    ctx.strokeStyle = `rgb(${POWERUP_TYPES[this.type].rgb})`;
     ctx.lineWidth   = 1.5;
     ctx.beginPath();
     ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Tres líneas en abanico apuntando hacia arriba
     ctx.beginPath();
-    for (const d of [-0.5, 0, 0.5]) {
-      const a = -Math.PI / 2 + d;
-      ctx.moveTo(0, 4);
-      ctx.lineTo(Math.cos(a) * 7, 4 + Math.sin(a) * 10);
+    if (this.type === 'triple') {
+      // Tres líneas en abanico apuntando hacia arriba
+      for (const d of [-0.5, 0, 0.5]) {
+        const a = -Math.PI / 2 + d;
+        ctx.moveTo(0, 4);
+        ctx.lineTo(Math.cos(a) * 7, 4 + Math.sin(a) * 10);
+      }
+    } else {
+      // Silueta de escudo
+      ctx.moveTo(0, -6);
+      ctx.lineTo(5, -4);
+      ctx.lineTo(5, 0);
+      ctx.quadraticCurveTo(5, 4, 0, 7);
+      ctx.quadraticCurveTo(-5, 4, -5, 0);
+      ctx.lineTo(-5, -4);
+      ctx.closePath();
     }
     ctx.stroke();
     ctx.restore();
@@ -301,8 +340,9 @@ class PowerUp {
 // ── Estado del juego ──────────────────────────────────────────────────────────
 let ship, bullets, asteroids, particles;
 let powerUp;          // PowerUp en pantalla o null
-let triplePowerUsed;  // true si ya apareció en esta partida
-let powerUpMsgTimer;  // tiempo restante del mensaje "¡DISPARO TRIPLE!"
+let powerUpsUsed;     // { triple, shield }: true si ya apareció en esta partida
+let powerUpMsgType;   // tipo del último power-up recogido (para el mensaje)
+let powerUpMsgTimer;  // tiempo restante del mensaje en pantalla
 const POWERUP_MSG_DURATION = 2;
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
@@ -326,7 +366,8 @@ function initGame() {
   asteroids = [];
   particles = [];
   powerUp         = null;
-  triplePowerUsed = false;
+  powerUpsUsed    = { triple: false, shield: false };
+  powerUpMsgType  = null;
   powerUpMsgTimer = 0;
   score  = 0;
   lives  = 3;
@@ -351,7 +392,8 @@ function explode(x, y, count = 8) {
 function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
-  ship.tripleShot = 0;   // al morir se pierde el disparo triple
+  ship.tripleShot = 0;   // al morir se pierden los power-ups
+  ship.shield     = 0;
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -365,6 +407,33 @@ function updatePowerUp(dt) {
   if (!powerUp) return;
   powerUp.update(dt);
   if (powerUp.dead) powerUp = null;
+}
+
+// Intenta soltar un power-up al destruir un asteroide
+function maybeDropPowerUp(x, y) {
+  if (powerUp) return;   // solo uno en pantalla a la vez
+  const available = Object.keys(POWERUP_TYPES).filter(t => !powerUpsUsed[t]);
+  if (available.length === 0 || Math.random() >= POWERUP_DROP_CHANCE) return;
+  const type = available[randInt(0, available.length - 1)];
+  powerUp = new PowerUp(x, y, type);
+  powerUpsUsed[type] = true;
+}
+
+function collectPowerUp(p) {
+  if (p.type === 'triple') ship.tripleShot = TRIPLE_DURATION;
+  else                     ship.shield     = SHIELD_DURATION;
+  powerUpMsgType  = p.type;
+  powerUpMsgTimer = POWERUP_MSG_DURATION;
+  explode(p.x, p.y, 10);
+}
+
+// Destruye un asteroide: puntos, explosión, fragmentos y posible power-up
+function destroyAsteroid(a, newAsteroids) {
+  a.dead = true;
+  score += POINTS[a.size];
+  explode(a.x, a.y, a.size * 5);
+  newAsteroids.push(...a.split());
+  maybeDropPowerUp(a.x, a.y);
 }
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -407,15 +476,7 @@ function update(dt) {
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
-        a.dead = true;
-        score += POINTS[a.size];
-        explode(a.x, a.y, a.size * 5);
-        newAsteroids.push(...a.split());
-        // Aparición aleatoria del power-up (solo una vez por partida)
-        if (!triplePowerUsed && Math.random() < POWERUP_DROP_CHANCE) {
-          powerUp = new PowerUp(a.x, a.y);
-          triplePowerUsed = true;
-        }
+        destroyAsteroid(a, newAsteroids);
       }
     }
   }
@@ -425,17 +486,27 @@ function update(dt) {
   // Power-up: movimiento y recogida
   updatePowerUp(dt);
   if (powerUp && !ship.dead && dist(ship, powerUp) < ship.radius + powerUp.radius) {
-    ship.tripleShot = TRIPLE_DURATION;
-    powerUpMsgTimer = POWERUP_MSG_DURATION;
-    explode(powerUp.x, powerUp.y, 10);
+    collectPowerUp(powerUp);
     powerUp = null;
   }
 
   // Nave vs asteroide
   if (ship.invincible <= 0) {
+    // Con escudo, el radio de impacto es el del círculo de energía
+    const shipR = ship.shield > 0 ? SHIELD_RADIUS : ship.radius;
     for (const a of asteroids) {
-      if (dist(ship, a) < ship.radius + a.radius * 0.82) {
-        killShip();
+      if (dist(ship, a) < shipR + a.radius * 0.82) {
+        if (ship.shield > 0) {
+          // El escudo absorbe el golpe: destruye el asteroide y se consume
+          const fragments = [];
+          destroyAsteroid(a, fragments);
+          asteroids = asteroids.filter(x => !x.dead).concat(fragments);
+          ship.shield     = 0;
+          ship.invincible = SHIELD_GRACE;   // margen para escapar de los fragmentos
+          explode(ship.x, ship.y, 12);
+        } else {
+          killShip();
+        }
         break;
       }
     }
@@ -476,17 +547,25 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
-  // Indicador de disparo triple activo
-  if (ship.tripleShot > 0) {
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#0ff';
-    ctx.font = '13px monospace';
-    ctx.fillText(`TRIPLE  ${ship.tripleShot.toFixed(1)}s`, 14, 48);
+  // Indicadores de power-ups activos (apilados)
+  const active = [
+    ['TRIPLE', ship.tripleShot, 'triple'],
+    ['ESCUDO', ship.shield,     'shield'],
+  ].filter(([, t]) => t > 0);
+
+  let y = 48;
+  for (const [label, time, type] of active) {
+    const { rgb, duration } = POWERUP_TYPES[type];
     const barW = 100;
-    ctx.strokeStyle = '#0ff';
+    ctx.textAlign   = 'left';
+    ctx.fillStyle   = `rgb(${rgb})`;
+    ctx.strokeStyle = `rgb(${rgb})`;
+    ctx.font = '13px monospace';
+    ctx.fillText(`${label}  ${time.toFixed(1)}s`, 14, y);
     ctx.lineWidth = 1;
-    ctx.strokeRect(14, 55, barW, 5);
-    ctx.fillRect(14, 55, barW * (ship.tripleShot / TRIPLE_DURATION), 5);
+    ctx.strokeRect(14, y + 7, barW, 5);
+    ctx.fillRect(14, y + 7, barW * (time / duration), 5);
+    y += 30;
   }
 }
 
@@ -512,8 +591,9 @@ function draw() {
 
   drawHUD();
 
-  // Mensaje al activar el disparo triple (se desvanece)
+  // Mensaje al activar un power-up (se desvanece)
   if (powerUpMsgTimer > 0 && state !== 'gameover') {
+    const { rgb, title, duration } = POWERUP_TYPES[powerUpMsgType];
     const t = powerUpMsgTimer / POWERUP_MSG_DURATION;   // 1 → 0
     const alpha = Math.min(1, t * 2);                   // se desvanece en la segunda mitad
     const scale = 1 + (1 - t) * 0.15;                   // crece ligeramente
@@ -521,12 +601,12 @@ function draw() {
     ctx.translate(W / 2, H / 3);
     ctx.scale(scale, scale);
     ctx.textAlign = 'center';
-    ctx.fillStyle = `rgba(0,255,255,${alpha.toFixed(2)})`;
+    ctx.fillStyle = `rgba(${rgb},${alpha.toFixed(2)})`;
     ctx.font = 'bold 36px monospace';
-    ctx.fillText('¡DISPARO TRIPLE!', 0, 0);
+    ctx.fillText(title, 0, 0);
     ctx.font = '15px monospace';
     ctx.fillStyle = `rgba(255,255,255,${(alpha * 0.75).toFixed(2)})`;
-    ctx.fillText(`${TRIPLE_DURATION} SEGUNDOS`, 0, 28);
+    ctx.fillText(`${duration} SEGUNDOS`, 0, 28);
     ctx.restore();
   }
 
