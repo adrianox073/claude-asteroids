@@ -26,7 +26,10 @@ The game is deployed to GitHub Pages (demo link in README.md).
 - **State machine**: the global `state` is `'playing'`, `'dead'` (2 s respawn delay counted by `deadTimer`) or `'gameover'` (press Space to call `initGame()`). `update()` branches on `state` first. Clearing all asteroids calls `nextLevel()`, which spawns `3 + level` large asteroids at least `SAFE_DIST` away from the center.
 - **Collisions**: circle-distance checks via `dist()`. The ship's hitbox uses `a.radius * 0.82` to be forgiving, and collisions are skipped while `ship.invincible > 0` (3 s after a respawn, shown as blinking).
 - **Loop**: `requestAnimationFrame`, with `dt` capped at 0.05 s so the game doesn't jump forward after the tab loses focus.
-- **Triple-shot power-up**: a single `PowerUp` instance (global `powerUp`, or `null`) can drop when an asteroid is destroyed, with probability `POWERUP_DROP_CHANCE`. `triplePowerUsed` limits it to once per game (reset only in `initGame()`). Picking it up sets `ship.tripleShot = TRIPLE_DURATION`, which makes `tryShoot()` return 3 bullets spread by `TRIPLE_SPREAD`. `tripleShot` lives in the `Ship` constructor, not `reset()`, so it survives `nextLevel()`; `killShip()` clears it. `powerUpMsgTimer` drives the on-screen announcement.
+- **Power-ups**: types are defined in `POWERUP_TYPES` (`triple`, `shield`: color, title, duration). At most one `PowerUp` is on screen (global `powerUp`, or `null`). `destroyAsteroid()` calls `maybeDropPowerUp()`, which rolls `POWERUP_DROP_CHANCE` and picks a random type not yet in `powerUpsUsed`, so each type drops at most once per game (reset only in `initGame()`). `collectPowerUp()` applies the effect and starts the announcement (`powerUpMsgType`/`powerUpMsgTimer`).
+  - `ship.tripleShot` makes `tryShoot()` return 3 bullets spread by `TRIPLE_SPREAD`.
+  - `ship.shield` enlarges the ship's hit radius to `SHIELD_RADIUS`; the first asteroid hit is destroyed instead of killing the ship, the shield drops to 0 and the ship gets `SHIELD_GRACE` seconds of invincibility.
+  - Effect timers live in the `Ship` constructor, not `reset()`, so they survive `nextLevel()`; `killShip()` clears them.
 
 ## Notes
 
