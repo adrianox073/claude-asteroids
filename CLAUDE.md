@@ -26,8 +26,9 @@ The game is deployed to GitHub Pages (demo link in README.md).
 - **State machine**: the global `state` is `'playing'`, `'dead'` (2 s respawn delay counted by `deadTimer`) or `'gameover'` (press Space to call `initGame()`). `update()` branches on `state` first. Clearing all asteroids calls `nextLevel()`, which spawns `3 + level` large asteroids at least `SAFE_DIST` away from the center.
 - **Collisions**: circle-distance checks via `dist()`. The ship's hitbox uses `a.radius * 0.82` to be forgiving, and collisions are skipped while `ship.invincible > 0` (3 s after a respawn, shown as blinking).
 - **Loop**: `requestAnimationFrame`, with `dt` capped at 0.05 s so the game doesn't jump forward after the tab loses focus.
+- **Triple-shot power-up**: a single `PowerUp` instance (global `powerUp`, or `null`) can drop when an asteroid is destroyed, with probability `POWERUP_DROP_CHANCE`. `triplePowerUsed` limits it to once per game (reset only in `initGame()`). Picking it up sets `ship.tripleShot = TRIPLE_DURATION`, which makes `tryShoot()` return 3 bullets spread by `TRIPLE_SPREAD`. `tripleShot` lives in the `Ship` constructor, not `reset()`, so it survives `nextLevel()`; `killShip()` clears it. `powerUpMsgTimer` drives the on-screen announcement.
 
 ## Notes
 
-- README.md still mentions power-ups and a "shooting star" asteroid, but they were removed (commit 13e713f). The code is the source of truth.
+- The code is the source of truth if README.md and the code disagree.
 
